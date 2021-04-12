@@ -1,0 +1,513 @@
+---
+title: "W241_FKJZ_FP"
+author: "Jai Raju, Fengyao Luo, Kai Nham, Zijian Wu"
+date: "\today"
+output:
+  html_document: default
+  # pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+```{r}
+# load packages 
+library(data.table)
+library(knitr)
+library(stargazer)
+library(sandwich)
+library(lmtest)
+library(AER)
+library(magrittr)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(purrr)
+#install.packages("cobalt")
+library("cobalt")
+#install.packages("WeightIt")
+library(WeightIt)
+#install.packages("MatchIt")
+library(MatchIt)
+
+options(digits=3)
+
+rm(list=ls())
+```
+
+
+## Read in the processed file for analysis
+
+```{r}
+d = fread('data/analysis/responses.csv')
+```
+
+
+## Change the data types on the columns that are encoded as strings to encode them as categorical data
+
+```{r}
+
+d = d[, age:= as.factor(age)]
+d = d[, political_leaning:= as.factor(political_leaning)]
+d = d[, hh_income:= as.factor(hh_income)]
+d = d[, race:= as.factor(race)]
+d = d[, education:= as.factor(education)]
+d = d[, gender:= as.factor(gender)]
+d = d[, police_abolition_nps_grp:= as.factor(police_abolition_nps_grp)]
+d = d[, defunding_police_nps_grp:= as.factor(defunding_police_nps_grp)]
+d = d[, new_prisons_nps_grp:= as.factor(new_prisons_nps_grp)]
+d = d[, police_safer_nps_grp:= as.factor(police_safer_nps_grp)]
+# d = d[, learn_more:= as.factor(learn_more)]
+
+# str(d)
+
+
+```
+
+
+#### Common functions
+
+
+## Covariate Balance Check
+
+```{r}
+covs <- subset(d, select = c(age, education, race, gender, hh_income, political_leaning))
+bal.tab(covs, treat = d$treatment)
+```
+```{r}
+# Generating propensity score weights
+W.out <- weightit(treatment ~ covs, data = d,
+                  method = "ps", estimand = "ATT")
+
+bal.tab(W.out)
+```
+
+
+```{r fig.width=5, fig.height=2.5}
+# Plot the before vs. after adjustment for covariate "age"
+
+options(repr.P.width=4,repr.P.height=3)
+bal.plot(W.out, var.name = "age", which = "both", 
+         type = "histogram", mirror = TRUE)  +
+ggtitle("Fig 1.a : Distributional Balance for Age") 
+
+
+```
+
+```{r fig.width=5, fig.height=2.5}
+# Plot the before vs. after adjustment for covariate "education"
+
+bal.plot(W.out, var.name = "education", which = "both", 
+         type = "histogram", mirror = TRUE) +
+  scale_x_discrete(guide = guide_axis(n.dodge=3)) +
+  ggtitle("Fig 1.b : Distributional Balance for Education")
+
+```
+
+```{r fig.width=5, fig.height=2.5}
+# Plot the before vs. after adjustment for covariate "gender"
+
+bal.plot(W.out, var.name = "gender", which = "both", 
+         type = "histogram", mirror = TRUE) +
+  scale_x_discrete(guide = guide_axis(n.dodge=3)) +
+  ggtitle("Fig 1.c : Distributional Balance for Gender")
+```
+
+```{r fig.width=5, fig.height=2.5}
+# Plot the before vs. after adjustment for covariate "hh_income"
+bal.plot(W.out, var.name = "hh_income", which = "both", 
+         type = "histogram", mirror = TRUE) +
+  scale_x_discrete(guide = guide_axis(n.dodge=3)) +
+  ggtitle("Fig 1.d : Distributional Balance for Household Income")
+```
+
+```{r fig.width=5, fig.height=2.5}
+# Plot the before vs. after adjustment for covariate "political_leaning"
+
+bal.plot(W.out, var.name = "political_leaning", which = "both", 
+         type = "histogram", mirror = TRUE) +
+  scale_x_discrete(guide = guide_axis(n.dodge=3)) +
+  ggtitle("Fig 1.e : Distributional Balance for Political Leaning")
+```
+
+```{r fig.width=5, fig.height=5}
+# Overall Covariate Balance Check Plot
+m.out <- matchit(f.build("treatment", covs), data = d, 
+                 method = NULL, replace = TRUE)
+
+love.plot(m.out, binary = "std", thresholds = c(m = .1))
+```
+
+```{r}
+# Alternate method to check Covariate Balance
+mod1 = d [, lm(treatment ~ 1)]
+mod2 = d [, lm(treatment ~ 1 + age + political_leaning + hh_income + race + education + gender)]
+anova(mod1, mod2, test = 'F')
+```
+
+> Overall, the randomization has been conducted well in this experiment. The adjusted balance according to propensity score does not make a big difference compare to the unadjusted balance in the above plots. We will move on our model analysis with the unadjusted samples. 
+
+> The F-test statistic of `0.31` shows that adding the external variables didnt change the randomization.
+
+## EDA
+
+## Let's plot the histograms of all the outcome variables 
+
+```{r}
+d[, police_abolition:= police_abolition/10]
+d[, donate1:= donate/50]
+```
+
+
+```{r}
+d[, abolition_score:= (police_abolition + defunding_police + new_prisons + defund_prison)/4 ]
+d1 = d[, c('police_abolition', 'defunding_police', 'new_prisons', 'defund_prison', 'police_safer' , 'donate1', 'treatment' )]
+
+ggplot(gather(d1, key, value, -treatment), aes(value, fill = factor(treatment))) + 
+  geom_histogram(aes(y = ..count..), alpha = 0.6, position = "identity", bins = 15) + 
+  facet_wrap(~key, scales = 'free_x') +
+    scale_fill_discrete(name = "Treatment", labels = c("Control", "Treatment")) +
+  ggtitle("Fig 3 : Histograms of outcome variables") 
+```
+
+```{r}
+#Boxplot
+
+ggplot(gather(d1, key, value, -treatment), aes(treatment, value, fill = factor(treatment))) +
+  geom_boxplot( alpha = 0.6) +
+  facet_wrap(~key, scales = 'free_x') +
+  ggtitle("Fig 4 : Boxplots of outcome variables") +
+  labs(x='Treatment', y='Variable Value') +
+    scale_fill_discrete(name = "Treatment", labels = c("Control", "Treatment"))
+
+```
+
+
+# Effect of treatment on police_abolition (First of the five outcome (Y) variables)
+
+### Histograms for `police_abolition` by the treatment and control group
+
+```{r}
+
+ggplot(gather(d[, c('police_abolition','treatment')], key, value, -treatment), aes(value, fill = factor(treatment))) + 
+  geom_histogram(aes(y = ..density..), alpha = 0.6, position = "identity", bins = 60) + 
+  facet_wrap(~key, scales = 'free_x') +
+  ggtitle("Fig 5a : Histograms for police_abolition by Treatment group") +
+    scale_fill_discrete(name = "Treatment", labels = c("Control", "Treatment"))
+
+d11 = data.table(d[treatment==T,])
+ggplot(d11, aes(x=police_abolition)) + 
+  geom_histogram(bins = 60, fill="lightblue") +
+  ggtitle("Fig 5b: Histogram for police_abolition in the Treatment group") 
+
+d12 = data.table(d[treatment==F,])
+ggplot(d12, aes(x=police_abolition)) + 
+  geom_histogram(bins = 60, fill="salmon")    +
+  ggtitle("Fig 5c: Histogram for police_abolition in the Control group") 
+
+mean(d[treatment==T, police_abolition])- mean(d[treatment==F, police_abolition])
+```
+
+### Models  
+
+```{r}
+
+# Check the effect of treatment on donation
+m2.0 = d[ , lm(police_abolition~ treatment)]
+covmat = vcovHC(m2.0)
+se2.0=list(sqrt(diag(covmat)))
+
+## Check if the XLABS participants had an impact
+# Adding xlab_grp which is set to 1 if the individual was sourced from to xlab
+
+m2.1 = d[ , lm(police_abolition~ treatment + political_leaning  )]
+covmat = vcovHC(m2.1)
+se2.1=list(sqrt(diag(covmat)))
+
+m2.2 = d[ , lm(police_abolition~ treatment +  political_leaning + xlab_grp + (treatment * xlab_grp)  )]
+covmat = vcovHC(m2.2)
+se2.2=list(sqrt(diag(covmat)))
+
+m2.3 = d[ , lm(police_abolition~ treatment +  political_leaning + xlab_grp + (treatment * xlab_grp) + age + gender   )]
+covmat = vcovHC(m2.3)
+se2.3=list(sqrt(diag(covmat)))
+
+stargazer(m2.0, m2.1, m2.2, m2.3, type='text', se=c(se2.0, se2.1, se2.2, se2.3),
+          title = "Table 3 : Casual effect of prompted reflection on support for abolition on police-abolition",
+          covariate.labels = c("Treatment",  "Independent", "Liberal", "XLAB",
+                               "Age(25-39)","Age(40-54)","Woman","Genderqueer/Non-binary",
+                               "Xlab-Treatment","Intercept"
+                               ),
+          dep.var.labels   = "Police Abolition",
+          header = F,
+          style = "apsr" ,
+          column.sep.width = "2pt"
+          )
+
+```
+
+
+# Effect of treatment on defunding_police (Second of the five outcome (Y) variables)
+
+### Histograms for `defunding_police` by the treatment and control group
+
+```{r}
+
+ggplot(gather(d[, c('defunding_police','treatment')], key, value, -treatment), aes(value, fill = factor(treatment))) + 
+  geom_histogram(aes(y = ..density..), alpha = 0.6, position = "identity", bins = 20) + 
+  facet_wrap(~key, scales = 'free_x') +
+  ggtitle("Fig 6a : Histograms for defunding_police by Treatment group")
+
+d11 = data.table(d[treatment==T,])
+ggplot(d11, aes(x=defunding_police)) + 
+  geom_histogram(bins = 20, fill="lightblue") +
+  ggtitle("Fig 6v: Histogram for defunding_police in the Treatment group") 
+
+d12 = data.table(d[treatment==F,])
+ggplot(d12, aes(x=defunding_police)) + 
+  geom_histogram(bins = 20, fill="salmon")    +
+  ggtitle("Fig 6c: Histogram for defunding_police in the Control group") 
+
+mean(d[treatment==T, defunding_police])- mean(d[treatment==F, defunding_police])
+```
+
+### Models  
+
+```{r}
+
+# Check the effect of treatment on donation
+m3.0 = d[ , lm(defunding_police~ treatment)]
+covmat = vcovHC(m3.0)
+se3.0=list(sqrt(diag(covmat)))
+
+## Check if the XLABS participants had an impact
+# Adding xlab_grp which is set to 1 if the individual was sourced from to xlab
+
+m3.1 = d[ , lm(defunding_police~ treatment + political_leaning  )]
+covmat = vcovHC(m3.1)
+se3.1=list(sqrt(diag(covmat)))
+
+m3.2 = d[ , lm(defunding_police~ treatment +  political_leaning + xlab_grp + (treatment * xlab_grp)  )]
+covmat = vcovHC(m3.2)
+se3.2=list(sqrt(diag(covmat)))
+
+m3.3 = d[ , lm(defunding_police~ treatment +  political_leaning + xlab_grp + (treatment * xlab_grp) + age + gender   )]
+covmat = vcovHC(m3.3)
+se3.3=list(sqrt(diag(covmat)))
+
+stargazer(m3.0, m3.1, m3.2, m3.3, type='text', se=c(se3.0, se3.1, se3.2, se3.3),
+          title = "Table 4 : Casual effect of prompted reflection on support for abolition on defunding-police",
+          covariate.labels = c("Treatment",  "Independent", "Liberal", "XLAB",
+                               "Age(25-39)","Age(40-54)","Woman","Genderqueer/Non-binary",
+                               "Xlab-Treatment","Intercept"
+                               ),
+          dep.var.labels   = "Defunding Police",          
+          header = F,
+          style = "apsr" ,
+          column.sep.width = "2pt"
+          )
+
+```
+
+
+# Effect of treatment on new_prisons (Third of the five outcome (Y) variables)
+
+### Histograms for `new_prisons` by the treatment and control group
+
+```{r}
+
+ggplot(gather(d[, c('new_prisons','treatment')], key, value, -treatment), aes(value, fill = factor(treatment))) + 
+  geom_histogram(aes(y = ..density..), alpha = 0.6, position = "identity", bins = 20) + 
+  facet_wrap(~key, scales = 'free_x') +
+  ggtitle("Fig 7a : Histograms for new_prisons by Treatment group")
+
+d11 = data.table(d[treatment==T,])
+ggplot(d11, aes(x=new_prisons)) + 
+  geom_histogram(bins = 20, fill="lightblue") +
+  ggtitle("Fig 7b: Histogram for new_prisons in the Treatment group") 
+
+d12 = data.table(d[treatment==F,])
+ggplot(d12, aes(x=new_prisons)) + 
+  geom_histogram(bins = 20, fill="salmon")    +
+  ggtitle("Fig 7c: Histogram for new_prisons in the Control group") 
+
+mean(d[treatment==T, new_prisons])- mean(d[treatment==F, new_prisons])
+```
+
+### Models  
+
+```{r}
+
+# Check the effect of treatment on donation
+m4.0 = d[ , lm(new_prisons~ treatment)]
+covmat = vcovHC(m4.0)
+se4.0=list(sqrt(diag(covmat)))
+
+## Check if the XLABS participants had an impact
+# Adding xlab_grp which is set to 1 if the individual was sourced from to xlab
+
+m4.1 = d[ , lm(new_prisons~ treatment + political_leaning  )]
+covmat = vcovHC(m4.1)
+se4.1=list(sqrt(diag(covmat)))
+
+m4.2 = d[ , lm(new_prisons~ treatment +  political_leaning + xlab_grp + (treatment * xlab_grp)  )]
+covmat = vcovHC(m4.2)
+se4.2=list(sqrt(diag(covmat)))
+
+m4.3 = d[ , lm(new_prisons~ treatment +  political_leaning + xlab_grp + (treatment * xlab_grp) + age + gender   )]
+covmat = vcovHC(m4.3)
+se4.3=list(sqrt(diag(covmat)))
+
+stargazer(m4.0, m4.1, m4.2, m4.3, type='text', se=c(se4.0, se4.1, se4.2, se4.3),
+          title = "Table 5 : Casual effect of prompted reflection on support for abolition on new-prisons",
+          covariate.labels = c("Treatment",  "Independent", "Liberal", "XLAB",
+                               "Age(25-39)","Age(40-54)","Woman","Genderqueer/Non-binary",
+                               "Xlab-Treatment","Intercept"
+                               ),
+          dep.var.labels   = "New Prisons",          
+          header = F,
+          style = "apsr" ,
+          column.sep.width = "2pt"
+          )
+
+```
+
+
+
+# Effect of treatment on defund_prison (Fourth of the five outcome (Y) variables)
+
+### Histograms for `defund_prison` by the treatment and control group
+
+```{r}
+
+ggplot(gather(d[, c('defund_prison','treatment')], key, value, -treatment), aes(value, fill = factor(treatment))) + 
+  geom_histogram(aes(y = ..density..), alpha = 0.6, position = "identity", bins = 20) + 
+  facet_wrap(~key, scales = 'free_x') +
+  ggtitle("Fig 8a : Histograms for defund_prison by Treatment group")
+
+d11 = data.table(d[treatment==T,])
+ggplot(d11, aes(x=defund_prison)) + 
+  geom_histogram(bins = 20, fill="lightblue") +
+  ggtitle("Fig 8b : Histogram for defund_prison in the Treatment group") 
+
+d12 = data.table(d[treatment==F,])
+ggplot(d12, aes(x=defund_prison)) + 
+  geom_histogram(bins = 20, fill="salmon")    +
+  ggtitle("Fig 8c : Histogram for defund_prison in the Control group") 
+
+mean(d[treatment==T, defund_prison])- mean(d[treatment==F, defund_prison])
+```
+
+### Models  
+
+```{r}
+
+# Check the effect of treatment on donation
+m5.0 = d[ , lm(defund_prison~ treatment)]
+covmat = vcovHC(m5.0)
+se5.0=list(sqrt(diag(covmat)))
+
+## Check if the XLABS participants had an impact
+# Adding xlab_grp which is set to 1 if the individual was sourced from to xlab
+
+m5.1 = d[ , lm(defund_prison~ treatment + political_leaning  )]
+covmat = vcovHC(m5.1)
+se5.1=list(sqrt(diag(covmat)))
+
+m5.2 = d[ , lm(defund_prison~ treatment +  political_leaning + xlab_grp + (treatment * xlab_grp)  )]
+covmat = vcovHC(m5.2)
+se5.2=list(sqrt(diag(covmat)))
+
+m5.3 = d[ , lm(defund_prison~ treatment +  political_leaning + xlab_grp + (treatment * xlab_grp) + age + gender   )]
+covmat = vcovHC(m5.3)
+se5.3=list(sqrt(diag(covmat)))
+
+stargazer(m5.0, m5.1, m5.2, m5.3, type='text', se=c(se5.0, se5.1, se5.2, se5.3),
+          title = "Table 6 : Casual effect of prompted reflection on support for abolition on defund-prison",
+          covariate.labels = c("Treatment",  "Independent", "Liberal", "XLAB",
+                               "Age(25-39)","Age(40-54)","Woman","Genderqueer/Non-binary",
+                               "Xlab-Treatment","Intercept"
+                               ),
+          dep.var.labels   = "Defunding Prison",          
+
+          header = F,
+          style = "apsr" ,
+          column.sep.width = "2pt"
+          )
+
+```
+
+
+
+# Effect of treatment on donation (first of the 5 Y variables)
+
+### Histograms for `donation` by the treatment and control group
+
+```{r}
+
+ggplot(gather(d[, c('donate','treatment')], key, value, -treatment), aes(value, fill = factor(treatment))) + 
+  geom_histogram(aes(y = ..density..), alpha = 0.6, position = "identity", bins = 20) + 
+  facet_wrap(~key, scales = 'free_x') +
+  ggtitle("Fig 9a : Histograms for Money donated by Treatment group")
+
+d11 = data.table(d[treatment==T,])
+ggplot(d11, aes(x=donate)) + 
+  geom_histogram(bins = 20, fill="lightblue") +
+  ggtitle("Fig 9b : Histogram for Money donated in the Treatment group") 
+
+d12 = data.table(d[treatment==F,])
+ggplot(d12, aes(x=donate)) + 
+  geom_histogram(bins = 20, fill="salmon")    +
+  ggtitle("Fig 9c : Histogram for Money donated in the Control group") 
+
+mean(d[treatment==T, donate])- mean(d[treatment==F, donate])
+```
+
+### Models  
+
+```{r}
+
+# Check the effect of treatment on donation
+m1.0 = d[ , lm(donate~ treatment)]
+covmat = vcovHC(m1.0)
+se1.0=list(sqrt(diag(covmat)))
+
+## Check if the XLABS participants had an impact
+# Adding xlab_grp which is set to 1 if the individual was sourced from to xlab
+
+m1.1 = d[ , lm(donate~ treatment + political_leaning  )]
+covmat = vcovHC(m1.1)
+se1.1=list(sqrt(diag(covmat)))
+
+m1.2 = d[ , lm(donate~ treatment +  political_leaning + xlab_grp + (treatment * xlab_grp)  )]
+covmat = vcovHC(m1.2)
+se1.2=list(sqrt(diag(covmat)))
+
+m1.3 = d[ , lm(donate~ treatment +  political_leaning + xlab_grp + (treatment * xlab_grp) + age + gender   )]
+covmat = vcovHC(m1.3)
+se1.3=list(sqrt(diag(covmat)))
+
+
+stargazer(m1.0, m1.1, m1.2, m1.3, type='text', se=c(se1.0, se1.1, se1.2, se1.3),
+          title = "Table 7 : Casual effect of prompted reflection on support for abolition on Donation.",
+          covariate.labels = c("Treatment",  "Independent", "Liberal", "XLAB",
+                               "Age(25-39)","Age(40-54)","Woman","Genderqueer/Non-binary",
+                               "Xlab-Treatment","Intercept"
+                               ),
+          dep.var.labels   = "Donation (in cents)",# Bold
+          header = F,
+          style = "apsr" ,
+          column.sep.width = "2pt"
+          )
+
+```
+
+
+
+
+?hist()
+
+
+
+
